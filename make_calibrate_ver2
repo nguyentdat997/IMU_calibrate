@@ -1,0 +1,86 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+#include <ros.h>
+#include <std_msgs/Int32.h>
+
+//define pins
+const int red_led = 12,yellow_led = 13, green_led = 7;
+
+
+ros::NodeHandle nh;
+Adafruit_BNO055 bno = Adafruit_BNO055(55);
+std_msgs::Int32 test_value;
+ros::Publisher test("test",&test_value);
+void setup() {
+  //Serial.begin(112500);
+  // put your setup code here, to run once:
+  pinMode(LED_BUILTIN,OUTPUT);  
+  pinMode(red_led,OUTPUT); 
+  pinMode(yellow_led,OUTPUT); 
+  pinMode(green_led,OUTPUT); 
+  
+  digitalWrite(LED_BUILTIN,LOW);
+  digitalWrite(red_led,LOW);
+  digitalWrite(yellow_led,LOW);
+  digitalWrite(green_led,LOW);
+  nh.initNode();
+  nh.advertise(test);
+  Wire.begin();
+  if(!bno.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+   // Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    digitalWrite(LED_BUILTIN,HIGH);
+    while(1);
+  }
+  delay(1000);
+  bno.setExtCrystalUse(true);
+  uint8_t system, gyro, accel, mag = 0;
+  while (system !=3 || gyro !=3 || accel !=3 || mag !=3)
+  {
+    bno.getCalibration(&system, &gyro, &accel, &mag);
+    if(gyro == 3 ){digitalWrite(red_led,HIGH);}
+    if(accel == 3 ){digitalWrite(yellow_led,HIGH);}
+    if(mag == 3 ){digitalWrite(green_led,HIGH);}
+//    Serial.print("CALIBRATION: Sys=");
+//  Serial.print(system, DEC);
+//  Serial.print(" Gyro=");
+//  Serial.print(gyro, DEC);
+//  Serial.print(" Accel=");
+//  Serial.print(accel, DEC);
+//  Serial.print(" Mag=");
+//  Serial.println(mag, DEC);
+  delay(500);
+  }
+  delay(1000);
+  test_value.data =0;
+  
+  
+
+}
+int count_test = 0;
+
+void loop() {
+
+  test.publish(&test_value);
+  test_value.data = count_test;
+  count_test = count_test +1;
+  delay(500);
+  nh.spinOnce();
+  // put your main code here, to run repeatedly:
+//  digitalWrite(red_led,HIGH);
+//  digitalWrite(yellow_led,LOW);
+//  digitalWrite(green_led,LOW);
+//  delay(1000);
+//  digitalWrite(red_led,LOW);
+//  digitalWrite(yellow_led,HIGH);
+//  digitalWrite(green_led,LOW);
+//  delay(1000);
+//  digitalWrite(red_led,LOW);
+//  digitalWrite(yellow_led,LOW);
+//  digitalWrite(green_led,HIGH);
+//  delay(1000);
+
+}
