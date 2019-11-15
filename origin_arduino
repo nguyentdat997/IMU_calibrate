@@ -1,0 +1,271 @@
+#include <ros.h>
+#include <string.h>
+#include <Arduino.h>
+#include "Adafruit_BNO055.h"
+#include "Adafruit_Sensor.h"
+#include <Wire.h>
+#include "std_msgs/String.h"
+#include <geometry_msgs/Vector3.h>
+#include <sensor_msgs/Imu.h>
+#include <math.h>
+#include <std_msgs/Int32.h>
+#include <std_msgs/Int64.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/Float32.h>
+
+
+
+//----------------------define pins-------------------------------//
+const int enA_left = 2, enB_left = 4;
+const int enA_right = 3, enB_right = 5;
+const int fmotor_left = 8, rmotor_left = 9;
+const int fmotor_right= 10, rmotor_right = 11;
+//---------------------------------------------------------------//
+
+//---------------------define parameters-------------------------//
+long int pulse_left = 0, pulse_right = 0;
+long time = 0;
+const int frequency = 40;
+int pwm_left, pwm_right;
+double dr;
+
+
+
+#define STANDARD_GRAVITY 9.08665      // [m/s^2]
+#define RAD_PER_DEG 0.01745329252     // [1/deg]
+#define PASCAL_PER_MILLIBAR 0.01      // [Pa/mbar]
+#define MICROTESLA_PER_TESLA 0.000001 // [uT/T]
+
+
+int id = -1;
+
+ros::NodeHandle nh;
+
+std_msgs::Int64 l_enc_value, r_enc_value;
+sensor_msgs::Imu imu_raw_msg;
+geometry_msgs::Vector3 euler_msg;
+sensor_msgs::Imu imu_quaterions;
+std_msgs::Float64 offset_angular;
+std_msgs::Float64 current_angular;
+
+void left_callback(const std_msgs::Int32& msg)
+{
+  pwm_left = msg.data;
+
+  analogWrite(fmotor_left, (pwm_left < 0) ? -pwm_left : 0);
+  analogWrite(rmotor_left, (pwm_left < 0) ? 0 : pwm_left);
+
+  analogWrite(fmotor_right, (pwm_right < 0) ? -pwm_right : 0);
+  analogWrite(rmotor_right, (pwm_right < 0) ? 0 : pwm_right);
+}
+
+void right_callback(const std_msgs::Int32&msg)
+{
+  pwm_right = msg.data;
+
+  analogWrite(fmotor_left, (pwm_left < 0) ? -pwm_left : 0);
+  analogWrite(rmotor_left, (pwm_left < 0) ? 0 : pwm_left);
+
+  analogWrite(fmotor_right, (pwm_right < 0) ? -pwm_right : 0);
+  analogWrite(rmotor_right, (pwm_right < 0) ? 0 : pwm_right);
+}
+
+void dr_callback(const std_msgs::Float32&msg)
+{
+  dr = msg.data;
+}
+
+
+ros::Publisher pub_imu ("imu/raw", &imu_raw_msg);
+ros::Publisher imu_publisher("bno055",&imu_quaterions);
+ros::Publisher l_enc_pub("lwheel_enc", &l_enc_value);
+ros::Publisher r_enc_pub("rwheel_enc", &r_enc_value);
+ros::Publisher offset_imu_angular("offset_angular_pub", &offset_angular);
+ros::Publisher current_imu_angular("current_angular_pub", &current_angular);
+ros::Subscriber<std_msgs::Int32> l_motor_sub("lwheel_motor_cmd_pub", left_callback);
+ros::Subscriber<std_msgs::Int32> r_motor_sub("rwheel_motor_cmd_pub", right_callback);
+ros::Subscriber<std_msgs::Float32> dr_sub("pubdr", dr_callback);
+//---------------------------------------------------------------//
+
+
+//------------------interrupt functions (Read encoder)----------------//
+void _interrupt_left()
+{
+  if(digitalRead(enB_left))
+    pulse_left--;
+  else
+    pulse_left++;
+}
+
+void _interrupt_right()
+{
+  if(digitalRead(enB_right))
+    pulse_right--;
+  else
+    pulse_right++;
+}
+//-------------------------------------------------------------------//
+
+
+void setup_pins()
+{
+  pinMode(enA_left, INPUT);
+  pinMode(enB_left, INPUT);
+  pinMode(enA_right, INPUT);
+  pinMode(enB_right, INPUT);
+  pinMode(fmotor_left, OUTPUT);
+  pinMode(rmotor_left, OUTPUT);
+  pinMode(fmotor_right, OUTPUT);
+  pinMode(rmotor_right, OUTPUT);
+  attachInterrupt(0, _interrupt_left, FALLING);
+  attachInterrupt(1, _interrupt_right, FALLING);
+  analogWrite(fmotor_left, 0);
+  analogWrite(rmotor_left, 0);
+  analogWrite(fmotor_right, 0);
+  analogWrite(rmotor_right, 0);
+}
+
+//------------------control motors (Pwm)------------------------------//
+
+
+
+Adafruit_BNO055 bno055 = Adafruit_BNO055(55);
+
+//#define ONE_WIRE_BUS 2
+//OneWire oneWire(ONE_WIRE_BUS);
+
+//DallasTemperature sensors(&oneWire);
+
+
+// double GyroLsbSens, AccelLsbSens;
+void setupIMU();
+void getRawIMU();
+
+void setup() {
+    setup_pins();
+    
+    nh.initNode();
+
+    nh.advertise(pub_imu);
+    nh.advertise(imu_publisher);
+    nh.advertise(offset_imu_angular);
+    nh.advertise(current_imu_angular);
+    nh.advertise(l_enc_pub);
+    nh.advertise(r_enc_pub);
+    nh.subscribe(l_motor_sub);
+    nh.subscribe(r_motor_sub);
+    nh.subscribe(dr_sub);
+
+    Wire.begin();
+    setupIMU();
+
+  delay(1000);
+
+    imu::Vector<3> euler = bno055.getVector(bno055.VECTOR_EULER);
+  offset_angular.data = euler[0];
+  
+
+}
+
+
+
+void setupIMU(){ /*
+                  Sets opmode to NDOF by default
+
+                  From Adafruit_BNO055.h:
+
+                  OPERATION_MODE_CONFIG                                   = 0X00,
+                  OPERATION_MODE_ACCONLY                                  = 0X01,
+                  OPERATION_MODE_MAGONLY                                  = 0X02,
+                  OPERATION_MODE_GYRONLY                                  = 0X03,
+                  OPERATION_MODE_ACCMAG                                   = 0X04,
+                  OPERATION_MODE_ACCGYRO                                  = 0X05,
+                  OPERATION_MODE_MAGGYRO                                  = 0X06,
+                  OPERATION_MODE_AMG                                      = 0X07,
+                  OPERATION_MODE_IMUPLUS                                  = 0X08,
+                  OPERATION_MODE_COMPASS                                  = 0X09,
+                  OPERATION_MODE_M4G                                      = 0X0A,
+                  OPERATION_MODE_NDOF_FMC_OFF                             = 0X0B,
+                  OPERATION_MODE_NDOF                                     = 0X0C
+
+
+                  ACCEL   MAG     GYRO    RELATIVE        ABSOLUTE
+                  ORIENTATION     ORIENTATION
+                  ---------------------------------------------------------------
+                  IMU     |    X    |   -    |   X  |       X        |     -
+                  COMPASS |    X    |   X    |   -  |       -        |     X
+                  M4G     |    X    |   X    |   -  |       X        |     -
+                  NDOF    |    X    |   X    |   X  |       -        |     X
+                */
+
+    id = bno055.begin(bno055.OPERATION_MODE_CONFIG);
+    bno055.setAxisRemap(bno055.REMAP_CONFIG_P6);
+    bno055.setAxisSign(bno055.REMAP_SIGN_P6);
+    bno055.setMode(bno055.OPERATION_MODE_IMUPLUS);
+    bno055.setExtCrystalUse(true);
+}
+
+
+
+void getRawIMU() {
+
+    // sensors_event_t event;
+    // bno055.getEvent(&event);
+
+    imu::Vector<3> gyro = bno055.getVector(bno055.VECTOR_GYROSCOPE);
+    imu_raw_msg.linear_acceleration.x = gyro[0];
+    imu_raw_msg.linear_acceleration.y = gyro[1];
+    imu_raw_msg.linear_acceleration.z = gyro[2];
+
+
+    imu::Vector<3> lin_acc = bno055.getVector(bno055.VECTOR_LINEARACCEL);
+    imu_raw_msg.angular_velocity.x = lin_acc[0];
+    imu_raw_msg.angular_velocity.y = lin_acc[1];
+    imu_raw_msg.angular_velocity.z = lin_acc[2];
+
+    imu::Quaternion qs = bno055.getQuat();
+    imu_raw_msg.orientation.x = qs.x();
+    imu_raw_msg.orientation.y = qs.y();
+    imu_raw_msg.orientation.z = qs.z();
+    imu_raw_msg.orientation.w = qs.w();
+
+
+    imu_raw_msg.header.stamp = ros::Time(millis()/1000.0, 0);
+    imu_raw_msg.header.frame_id = "imu_link";
+    pub_imu.publish(&imu_raw_msg);
+
+    if(dr == 0.0)
+  {
+    imu::Vector<3> euler = bno055.getVector(bno055.VECTOR_EULER);
+    current_angular.data = euler[0];
+  }
+
+    else
+  {
+    imu::Vector<3> euler = bno055.getVector(bno055.VECTOR_EULER); 
+    offset_angular.data = euler[0];
+  }
+  
+    offset_imu_angular.publish(&offset_angular);
+    current_imu_angular.publish(&current_angular);
+    
+
+}
+
+bool calibrated = false;
+
+
+void loop(){
+
+    if(millis() - time >= (1.0 /frequency) * 1000)
+    {
+  l_enc_value.data = pulse_left;
+      r_enc_value.data = pulse_right;
+      l_enc_pub.publish(&l_enc_value);
+      r_enc_pub.publish(&r_enc_value);
+
+        getRawIMU();
+
+    }
+    nh.spinOnce();
+}
