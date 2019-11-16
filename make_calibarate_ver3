@@ -1,0 +1,283 @@
+//----------------------for ros ----------------------------------//
+#include <ros.h>
+#include <std_msgs/Int32.h>
+#include <std_msgs/Int64.h>
+#include <geometry_msgs/Vector3.h>
+#include <geometry_msgs/Quaternion.h>
+#include <sensor_msgs/Imu.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/Float32.h>
+
+
+//----------------------------------------------------------------//
+
+//----------------------for imu ---------------------------------//
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+
+//----------------------define pins-------------------------------//
+const int enA_left = 2, enB_left = 4;
+const int enA_right = 3, enB_right = 5;
+const int fmotor_left = 8, rmotor_left = 9;
+const int fmotor_right= 10, rmotor_right = 11;
+const int red_led = 31;
+const int yellow_led = 33;
+const int green_led = 35;
+//---------------------------------------------------------------//
+
+//---------------------define parameters-------------------------//
+long int pulse_left = 0, pulse_right = 0;
+long time = 0;
+const int frequency = 10;
+int pwm_left, pwm_right;
+int id = -1;
+
+//---------------------for ros ----------------------------------//
+ros::NodeHandle nh;
+std_msgs::Int64 l_enc_value, r_enc_value;
+//sensor_msgs::Imu imu_raw_msg;
+std_msgs::Float64 imu_angular;
+
+geometry_msgs::Vector3 imu_accel;
+geometry_msgs::Vector3 imu_gyro;
+geometry_msgs::Quaternion imu_qs;
+
+
+
+void left_callback(const std_msgs::Int32& msg)
+{
+  pwm_left = msg.data;
+  run_cmd();
+}
+void right_callback(const std_msgs::Int32&msg)
+{
+  pwm_right = msg.data;
+  run_cmd();
+}
+
+ros::Publisher l_enc_pub("lwheel_enc", &l_enc_value);
+ros::Publisher r_enc_pub("rwheel_enc", &r_enc_value);
+ros::Subscriber<std_msgs::Int32> l_motor_sub("lwheel_motor_cmd_pub", left_callback);
+ros::Subscriber<std_msgs::Int32> r_motor_sub("rwheel_motor_cmd_pub", right_callback);
+//ros::Publisher pub_imu_raw("imu/raw", &imu_raw_msg);
+ros::Publisher pub_imu_accel("imu/accel", &imu_accel);
+ros::Publisher pub_imu_gyro("imu/gyro", &imu_gyro);
+ros::Publisher pub_imu_qs("imu/qs", &imu_qs);
+ros::Publisher pub_imu_angular("imu/angular",&imu_angular);
+//---------------------------------------------------------------//
+
+void setup_pins()
+{
+  pinMode(enA_left, INPUT);
+  pinMode(enB_left, INPUT);
+  pinMode(enA_right, INPUT);
+  pinMode(enB_right, INPUT);
+  pinMode(fmotor_left, OUTPUT);
+  pinMode(rmotor_left, OUTPUT);
+  pinMode(fmotor_right, OUTPUT);
+  pinMode(rmotor_right, OUTPUT);
+  attachInterrupt(0, _interrupt_left, FALLING);
+  attachInterrupt(1, _interrupt_right, FALLING);
+  analogWrite(fmotor_left, 0);
+  analogWrite(rmotor_left, 0);
+  analogWrite(fmotor_right, 0);
+  analogWrite(rmotor_right, 0);
+
+  pinMode(LED_BUILTIN,OUTPUT);  
+  pinMode(red_led,OUTPUT); 
+  pinMode(yellow_led,OUTPUT); 
+  pinMode(green_led,OUTPUT); 
+  
+  digitalWrite(LED_BUILTIN,LOW);
+  digitalWrite(red_led,LOW);
+  digitalWrite(yellow_led,LOW);
+  digitalWrite(green_led,LOW);
+}
+
+//------------------control motors (Pwm)------------------------------//
+void run_cmd()
+{
+  analogWrite(fmotor_left, (pwm_left < 0) ? -pwm_left : 0);
+  analogWrite(rmotor_left, (pwm_left < 0) ? 0 : pwm_left);
+
+  analogWrite(fmotor_right, (pwm_right < 0) ? -pwm_right : 0);
+  analogWrite(rmotor_right, (pwm_right < 0) ? 0 : pwm_right);
+}
+//--------------------------------------------------------------------//
+
+
+
+//------------------interrupt functions (Read encoder)----------------//
+void _interrupt_left()
+{
+  if(digitalRead(enB_left))
+    pulse_left--;
+  else
+    pulse_left++;
+}
+
+void _interrupt_right()
+{
+  if(digitalRead(enB_right))
+    pulse_right--;
+  else
+    pulse_right++;
+}
+//-------------------------------------------------------------------//
+//---------------- get imu data ---------------------------------//
+Adafruit_BNO055 bno055 = Adafruit_BNO055(55);
+void setupIMU();
+void getRawIMU();
+
+
+bool calibrated = false;
+void setupIMU(){ /*
+                  Sets opmode to NDOF by default
+
+                  From Adafruit_BNO055.h:
+
+                  OPERATION_MODE_CONFIG                                   = 0X00,
+                  OPERATION_MODE_ACCONLY                                  = 0X01,
+                  OPERATION_MODE_MAGONLY                                  = 0X02,
+                  OPERATION_MODE_GYRONLY                                  = 0X03,
+                  OPERATION_MODE_ACCMAG                                   = 0X04,
+                  OPERATION_MODE_ACCGYRO                                  = 0X05,
+                  OPERATION_MODE_MAGGYRO                                  = 0X06,
+                  OPERATION_MODE_AMG                                      = 0X07,
+                  OPERATION_MODE_IMUPLUS                                  = 0X08,
+                  OPERATION_MODE_COMPASS                                  = 0X09,
+                  OPERATION_MODE_M4G                                      = 0X0A,
+                  OPERATION_MODE_NDOF_FMC_OFF                             = 0X0B,
+                  OPERATION_MODE_NDOF                                     = 0X0C
+
+
+                  ACCEL   MAG     GYRO    RELATIVE        ABSOLUTE
+                  ORIENTATION     ORIENTATION
+                  ---------------------------------------------------------------
+                  IMU     |    X    |   -    |   X  |       X        |     -
+                  COMPASS |    X    |   X    |   -  |       -        |     X
+                  M4G     |    X    |   X    |   -  |       X        |     -
+                  NDOF    |    X    |   X    |   X  |       -        |     X
+                */
+
+    id = bno055.begin(bno055.OPERATION_MODE_CONFIG);
+    bno055.setAxisRemap(bno055.REMAP_CONFIG_P6);
+    bno055.setAxisSign(bno055.REMAP_SIGN_P6);
+    bno055.setMode(bno055.OPERATION_MODE_IMUPLUS);
+    bno055.setExtCrystalUse(true);
+}
+
+void getRawIMU() {
+
+    // sensors_event_t event;
+    // bno055.getEvent(&event);
+
+    imu::Vector<3> gyro = bno055.getVector(bno055.VECTOR_GYROSCOPE);
+    imu_accel.x = gyro[0];
+    imu_accel.y = gyro[1];
+    imu_accel.z = gyro[2];
+    pub_imu_accel.publish(&imu_accel);
+
+
+    imu::Vector<3> lin_acc = bno055.getVector(bno055.VECTOR_LINEARACCEL);
+    imu_gyro.x = lin_acc[0];
+    imu_gyro.y = lin_acc[1];
+    imu_gyro.z = lin_acc[2];
+    pub_imu_gyro.publish(&imu_gyro);
+
+    imu::Quaternion qs = bno055.getQuat();
+    imu_qs.x = qs.x();
+    imu_qs.y = qs.y();
+    imu_qs.z = qs.z();
+    imu_qs.w = qs.w();
+    pub_imu_qs.publish(&imu_qs);
+//
+//
+//    imu_raw_msg.header.stamp = ros::Time(millis()/1000.0, 0);
+//    imu_raw_msg.header.frame_id = "imu_link";
+//    pub_imu_raw.publish(&imu_raw_msg);
+
+ //   if(dr == 0.0)
+ // {
+    imu::Vector<3> euler = bno055.getVector(bno055.VECTOR_EULER);
+    imu_angular.data = euler[0];
+    pub_imu_angular.publish(&imu_angular);
+ // }
+
+ //   else
+ // {
+ //   imu::Vector<3> euler = bno055.getVector(bno055.VECTOR_EULER); 
+//    offset_angular.data = euler[0];
+ // }
+  
+  //  offset_imu_angular.publish(&offset_angular);
+ //   current_imu_angular.publish(&current_angular);
+    
+
+}
+
+
+
+void setup() 
+{
+  setup_pins();
+  Wire.begin();
+  setupIMU();
+  // for calibrate...
+  if(!bno055.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+   // Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    digitalWrite(LED_BUILTIN,HIGH);
+    while(1);
+  }
+  delay(1000);
+  
+  uint8_t system, gyro, accel, mag = 0;
+  while (system !=3 || gyro !=3 || accel !=3 || mag !=3)
+  {
+    bno055.getCalibration(&system, &gyro, &accel, &mag);
+    if(gyro == 3 ){digitalWrite(red_led,HIGH);}
+    if(accel == 3 ){digitalWrite(yellow_led,HIGH);}
+    if(mag == 3 ){digitalWrite(green_led,HIGH);}
+//    Serial.print("CALIBRATION: Sys=");
+//  Serial.print(system, DEC);
+//  Serial.print(" Gyro=");
+//  Serial.print(gyro, DEC);
+//  Serial.print(" Accel=");
+//  Serial.print(accel, DEC);
+//  Serial.print(" Mag=");
+//  Serial.println(mag, DEC);
+  delay(500);
+  }
+  
+  nh.initNode();
+  nh.advertise(l_enc_pub);
+  nh.advertise(r_enc_pub);
+  nh.subscribe(l_motor_sub);
+  nh.subscribe(r_motor_sub);
+  //nh.advertise(pub_imu_raw);
+  nh.advertise(pub_imu_accel);
+  nh.advertise(pub_imu_gyro);
+  nh.advertise(pub_imu_qs);
+  nh.advertise(pub_imu_angular);
+  
+}
+
+void loop() 
+{
+  long  time_start = millis();
+  if(time_start - time >= (1.0 /frequency) * 1000)
+  {
+    l_enc_value.data = pulse_left;
+    r_enc_value.data = pulse_right;
+    l_enc_pub.publish(&l_enc_value);
+    r_enc_pub.publish(&r_enc_value);
+   // pub_imu_raw.publish(&imu_raw_msg);
+    getRawIMU();
+    time = time_start;
+  }
+  nh.spinOnce();
+}
